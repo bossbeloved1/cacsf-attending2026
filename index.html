@@ -510,45 +510,107 @@ const fontSizeValue = document.getElementById('fontSizeValue');
 
 uploadZone.addEventListener('click', () => photoInput.click());
 
-photoInput.addEventListener('change', (e) => {
+async function convertHeicToBlob(file){
+  if(!window._heic2anyPromise){
+    window._heic2anyPromise = new Promise((resolve,reject)=>{
+      const s=document.createElement('script');
+      s.src='https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+      s.onload=()=>resolve(window.heic2any);
+      s.onerror=()=>reject(new Error('heic-lib-failed'));
+      document.head.appendChild(s);
+    });
+  }
+  const heic2any = await window._heic2anyPromise;
+  return await heic2any({ blob:file, toType:'image/jpeg', quality:0.92 });
+}
+
+function blobToDataURL(blob){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(r.result);
+    r.onerror=()=>reject(r.error||new Error('read-failed'));
+    r.readAsDataURL(blob);
+  });
+}
+
+function loadImageFromURL(url){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.crossOrigin='anonymous';
+    img.onload=()=>resolve(img);
+    img.onerror=()=>reject(new Error('img-decode-failed'));
+    img.src=url;
+  });
+}
+
+async function fileToImage(file){
+  const isHeic = /\.(heic|heif)$/i.test(file.name) || /heic|heif/i.test(file.type);
+  let workingBlob = file;
+  if(isHeic){
+    try { workingBlob = await convertHeicToBlob(file); }
+    catch(err){ throw new Error('heic-convert-failed'); }
+  }
+  // Try direct decode via object URL (handles png/jpg/webp/gif/avif/bmp)
+  const objURL = URL.createObjectURL(workingBlob);
+  try {
+    const img = await loadImageFromURL(objURL);
+    const dataURL = await blobToDataURL(workingBlob);
+    URL.revokeObjectURL(objURL);
+    return { img, dataURL };
+  } catch(e){
+    URL.revokeObjectURL(objURL);
+  }
+  // Fallback: createImageBitmap → canvas → PNG data URL
+  if(typeof createImageBitmap==='function'){
+    try {
+      const bmp = await createImageBitmap(workingBlob);
+      const c = document.createElement('canvas');
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext('2d').drawImage(bmp,0,0);
+      const dataURL = c.toDataURL('image/png');
+      const img = await loadImageFromURL(dataURL);
+      return { img, dataURL };
+    } catch(e){}
+  }
+  throw new Error('unsupported-format');
+}
+
+photoInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const isHeic = /\.(heic|heif)$/i.test(file.name) || /heic|heif/i.test(file.type);
-  const reader = new FileReader();
-  reader.onerror = () => alert('Could not read that file. Please try a different image.');
-  reader.onload = (ev) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onerror = () => {
-      if (isHeic) {
-        alert('HEIC/HEIF photos from iPhone are not supported directly by browsers. In your Photos app, tap Share → Save as File, or change Settings → Camera → Formats → Most Compatible, then try again.');
-      } else {
-        alert('This image format could not be loaded. Try PNG, JPG, WEBP, or GIF.');
-      }
-    };
-    img.onload = () => {
-      userImg = img;
-      const size = CIRCLE.r * 2;
-      imgState.baseScale = Math.max(size / img.width, size / img.height);
-      imgState.scale = 1;
-      imgState.offsetX = 0;
-      imgState.offsetY = 0;
-      zoomSlider.value = 100;
+  const origLabel = uploadZone.getAttribute('data-loading');
+  uploadZone.classList.add('loading');
+  try {
+    const { img, dataURL } = await fileToImage(file);
+    userImg = img;
+    const size = CIRCLE.r * 2;
+    imgState.baseScale = Math.max(size / img.width, size / img.height);
+    imgState.scale = 1;
+    imgState.offsetX = 0;
+    imgState.offsetY = 0;
+    zoomSlider.value = 100;
 
-      avatarPreview.src = ev.target.result;
-      avatarPreview.style.display = 'block';
-      avatarPlaceholder.style.display = 'none';
-      avatarEditBadge.style.display = 'flex';
-      uploadZone.classList.add('has-image');
+    avatarPreview.src = dataURL;
+    avatarPreview.style.display = 'block';
+    avatarPlaceholder.style.display = 'none';
+    avatarEditBadge.style.display = 'flex';
+    uploadZone.classList.add('has-image');
 
-      zoomRow.style.display = 'flex';
-      dragNote.style.display = 'block';
-      updateDownloadState();
-      draw();
-    };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(file);
+    zoomRow.style.display = 'flex';
+    dragNote.style.display = 'block';
+    updateDownloadState();
+    draw();
+  } catch(err){
+    const code = err && err.message;
+    if(code==='heic-convert-failed' || code==='heic-lib-failed'){
+      alert('Could not convert this HEIC photo. Please check your internet connection and try again, or export the photo as JPG from your Photos app.');
+    } else {
+      alert('This image could not be loaded. Please try a PNG, JPG, JPEG, WEBP, GIF, BMP, or AVIF file.');
+    }
+  } finally {
+    uploadZone.classList.remove('loading');
+    photoInput.value = '';
+  }
 });
 
 zoomSlider.addEventListener('input', () => {
